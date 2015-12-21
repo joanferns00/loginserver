@@ -1,0 +1,435 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <link rel="stylesheet" href="https://netdna.bootstrapcdn.com/bootstrap/3.1.1/css/bootstrap.min.css">
+<base href="/">
+</head>
+<body ng-app='app' ng-controller="AppCtrl" >
+<div ng-view></div>
+  <!-- <script src='https://ajax.googleapis.com/ajax/libs/angularjs/1.2.18/angular.js'></script> -->
+  <script src='https://ajax.googleapis.com/ajax/libs/angularjs/1.4.5/angular.min.js'></script>
+  <script src='https://cdnjs.cloudflare.com/ajax/libs/angular.js/1.4.5/angular-route.min.js'></script>
+  <script src="https://code.jquery.com/jquery-2.1.4.min.js"></script>
+  <script src="js/u2f-api.js"></script>
+  <script src="js/enrolldata.js"></script>
+  <script src="js/common.js"></script>
+  <script src="js/FIDOAJAXMethods.js"></script>
+
+
+  <script>
+  var app = angular.module('app', ['ngRoute']);
+
+  var f1 = new fidoaction("preregister", "register", "", "");
+
+  //Service for getting and posting Posts
+  app.factory('PostService', function($http){
+return{
+getPosts: function(){
+return $http.get('/api/posts');
+},
+addPosts: function(data){
+return $http.post('/api/posts', {
+    username: 'cheryl001',
+    body: data
+});
+}
+};
+  });
+//Service to login and add a new user
+app.factory('UserService', function($http){
+var svc = this;
+svc.getUser = function(){
+    console.log("Going to getUser()");
+    return $http.get('/api/user');
+    // return $http.get('/api/user', {
+    //     headers: {'X-Auth': this.token}
+    // });
+};
+//http://andyshora.com/promises-angularjs-explained-as-cartoon.html
+svc.login = function(username, password){
+    return $http.post('/api/user/session', {
+        username: username, password: password
+    }).then(function(val){
+        //If successful
+        svc.token=val.data;
+//Add this token as X-Auth header to all requests
+$http.defaults.headers.common['X-Auth'] = val.data
+        return svc.getUser();
+
+    }, function(err){
+        //If user was not found
+        console.log(err);
+        return null;
+    });
+};
+svc.newUser = function(username, password, rpassword){
+    return $http.post('/api/user', {username:username, password: password, rpassword: rpassword})
+    .then(function(val){
+        return svc.login(username, password);
+    });
+};
+
+return svc;
+});
+
+app.factory('demoService', function($http, $q){
+var ds = this;
+
+ds.authenticate = function(gnubbyAuthData){
+    console.log("Going to make call ");
+console.log(gnubbyAuthData);
+var deferred = $q.defer();
+$http.post('/api/fido/authenticate', gnubbyAuthData)
+.success(function(data){
+    console.log("Result of authenticate:");
+    console.log(data);
+    if(data.Response.indexOf('Success') !== -1){
+        //return true if you succeeded
+        deferred.resolve(true);
+    }
+    else{
+        //Else return false
+        deferred.resolve(false);
+    }
+})
+.error(function(msg, code){
+    deferred.reject(msg);
+});
+return deferred.promise;
+};
+
+
+ds.preauthenticate = function(){
+var deferred = $q.defer();
+$http.post('/api/fido/preauthenticate')
+.success(function(data){
+    if(isChromeCorrect() && data.Error.length === 0){
+    //process the data from the SKCE server
+    var gd = f1.paResp(data);
+    console.log(gd);
+    //If signDataAray i.e. if there are keys associated with this username,
+    if (gd.signDataArray) {
+        if (gd.signDataArray.length > 0) {
+                deferred.resolve(gd.signDataArray);
+        }
+        else{
+            console.log("No keys associated with this account");
+        }
+    }
+    else{
+        console.log(gd);
+    }
+}
+else{
+    console.log('Use ChromeV43 or https://fidodemo.strongauth.com:48181');
+}
+})
+.error(function(msg, code){
+deferred.reject(msg);
+});
+return deferred.promise;
+};
+//write the same for preregister and register
+return ds;
+});
+
+app.factory('FIDOService', function($http, $q, $location){
+    var svc = this;
+    svc.authenticate = function(gnubbyAuthData){
+     return $http.post('/api/fido/authenticate',gnubbyAuthData).then(function(val){
+        console.log("Result of authenticate:");
+        console.log(val);
+        if(val.data.Response.indexOf('Success') !== -1){
+            //Route to posts
+            // return true;
+            console.log("trueXXX");
+            $location.path('/posts');
+        }
+        else{
+            // return false;
+            $location.path('/login');
+        }
+    });
+};
+
+    svc.preauthenticate = function(){
+        //{username: username}
+        //return
+    return $http.post('/api/fido/preauthenticate').then(function(val){
+    if(isChromeCorrect() && val.data.Error.length === 0){
+    //process the data from the SKCE server
+    var gd = f1.paResp(val.data);
+    console.log(gd);
+    //If signDataAray i.e. if there are keys associated with this username,
+    if (gd.signDataArray) {
+        if (gd.signDataArray.length > 0) {
+            var sda = gd.signDataArray;
+            console.log("Going to send to Gnubby....");
+            console.log(sda);
+            console.log("Please confirm user presence");
+            // Store sessionIds
+            var sessionIds = {};
+            for (var i = 0; i < sda.length; i++) {
+                sessionIds[sda[i].keyHandle] = sda[i].sessionId;
+                delete sda[i]['sessionId'];
+            }
+
+
+
+
+            //Going to call Chromes in-built extension
+            u2f.sign(sda, function(response){
+                if (response.errorCode) {
+                    //If there is an error display it.
+                    onError(response.errorCode, true);
+                    console.log(onError(response.errorCode, true));
+
+                } else {
+                    //process the response from the extension and call SKCEs authenticate web-service
+                    response['sessionId'] = sessionIds[response.keyHandle];
+                    console.log("Received the following Registration"
+                            + " Challenge Response parameters from "
+                            + "the extension; ");
+                    console.log(response);
+                    if (response) {
+                        //Setting data structure for the FIDO Server for authenticate REST webservice call.
+                        var responseData = {
+                            "clientData": response.clientData,
+                            "sessionId": response.sessionId,
+                            "signatureData": response.signatureData,
+                            "keyHandle": response.keyHandle
+                        };
+                        //Make a call to the authenticate webservice
+                        return svc.authenticate({Adata: responseData});
+
+                        //  return $http.post('/api/fido/authenticate',{Adata: reponseData}).then(function(val){
+                        //     console.log("Result of authenticate:");
+                        //     console.log(val);
+                        //     if(val.data.Response.indexOf('Success') !== -1){
+                        //         //Route to posts
+                        //         // return true;
+                        //         return true;
+                        //
+                        //     }
+                        //     else{
+                        //         // return false;
+                        //         return false;
+                        //     }
+                        // });
+                    }
+                    else{
+                        console.log("Resopnse from Gnubby is NULL");
+                    }
+                }
+            });
+        }
+        else{
+            console.log("No keys associated with this account");
+        }
+
+    }
+    else{
+        console.log(gd);
+    }
+}
+else{
+    console.log('Use ChromeV43 or https://fidodemo.strongauth.com:48181');
+}
+
+
+});
+
+    };
+
+
+    svc.preregister = function(username){
+        //{username: username}
+        return $http.post('/api/fido/preregister').then(function(val){
+//if you are using chrome and there is no error,
+if(isChromeCorrect() && val.data.Error.length === 0){
+    var gd = f1.prResp(val.data);
+    console.log(gd);
+    console.log('Confirm user presence');
+    //Call the inbuilt chrome extension
+    u2f.register([gd.enrollData],
+    gd.signData, function (result) {
+        //If an error was returned
+        if (result.errorCode) {
+            console.log("Error " + result.errorCode);
+            console.log(onError(result.errorCode, true));
+
+        }
+        else{
+            console.log("Result from Gnubby");
+            console.log(result);
+            var DataResponse = {
+                "clientData": result.clientData,
+                "sessionId": result.sessionId,
+                "registrationData": result.registrationData
+            };
+            //Make a call to the register webservice
+            return $http.post('/api/fido/register',{Adata: DataResponse}).then(function(val){
+                console.log("Result of register:");
+                console.log(val);
+
+            });
+
+        }
+    });
+
+}
+else{
+    console.log('Use ChromeV43 or https://fidodemo.strongauth.com:48181');
+}
+
+
+        });
+    };
+    return svc;
+});
+
+//Controller to hold the logged in user
+app.controller('AppCtrl', function($scope){
+    $scope.$on('login', function(_, user){
+        console.log("Clicked in AppCtrl");
+        console.log(user);
+        $scope.currentUser = user;
+    });
+});
+
+  app.controller('PostsCtrl', function($scope, $http, PostService){
+      $scope.posts = PostService.getPosts().then(function(data){
+           $scope.posts = data.data;
+      });
+
+$scope.addPost = function(){
+    if($scope.postBody){
+        PostService.addPosts($scope.postBody).then(function(post){
+            $scope.posts.unshift(post.data);
+            $scope.postBody = null;
+        });
+    }
+};
+  });
+
+    app.controller('LoginCtrl', function($scope, $location, UserService){
+        $scope.validateUser = function(){
+            //Call service to validate
+            UserService.login($scope.username, $scope.password).then(function(val){
+                if(val === null){
+                    //If user was not found, print error
+                    console.log("User could not be verified");
+                }
+                else{
+                    //Else, if valid, redirect
+                    console.log("Validating and redirecting to a route");
+                    $scope.$emit('login', val.data);
+                    $location.path('/fidoauthenticate');
+                }
+
+            }, function(err){
+
+                console.log(err);
+            });
+
+
+        };
+    });
+
+    app.controller('NewUserCtrl', function($scope, $location, UserService){
+        $scope.createUser = function(){
+            //Call service to validate
+            console.log(UserService.newUser($scope.username, $scope.password, $scope.password));
+            //If valid, redirect
+            //else show an error message
+            console.log("Creating and redirecting to a route");
+            $location.path('/posts');
+        };
+    });
+
+    app.controller('RegCtrl', function($scope, FIDOService){
+        $scope.preregister = function(){
+            console.log('Going to call preregister');
+            FIDOService.preregister('test');
+
+        };
+    });
+    app.controller('AuthCtrl', function($scope, $location, FIDOService, demoService){
+
+//http://stackoverflow.com/questions/18421830/how-to-wait-till-the-response-comes-from-the-http-request-in-angularjs
+        $scope.preauthenticate = function(){
+            console.log("Going to call preauthenticate");
+demoService.preauthenticate().then(function(sda){
+    console.log("Going to send to Gnubby....");
+    console.log(sda);
+    console.log("Please confirm user presence");
+    // Store sessionIds
+    var sessionIds = {};
+    for (var i = 0; i < sda.length; i++) {
+        sessionIds[sda[i].keyHandle] = sda[i].sessionId;
+        delete sda[i]['sessionId'];
+    }
+    //Going to call Chromes in-built extension
+
+u2f.sign(sda, function(response){
+    if (response.errorCode) {
+        //If there is an error display it.
+        onError(response.errorCode, true);
+        console.log(onError(response.errorCode, true));
+
+    } else {
+        //process the response from the extension and call SKCEs authenticate web-service
+        response['sessionId'] = sessionIds[response.keyHandle];
+        console.log("Received the following Registration"
+                + " Challenge Response parameters from "
+                + "the extension; ");
+        console.log(response);
+        if (response) {
+            //Setting data structure for the FIDO Server for authenticate REST webservice call.
+            var responseData = {
+                "clientData": response.clientData,
+                "sessionId": response.sessionId,
+                "signatureData": response.signatureData,
+                "keyHandle": response.keyHandle
+            };
+            //Make a call to the authenticate webservice
+            console.log("Going to send to the authenticate webserive call");
+            console.log(responseData);
+            demoService.authenticate({Adata: responseData}).then(function(result){
+                if(result){
+                    //Route to posts
+                    $location.path('/posts');
+                }
+                else{
+                    // route to login because login was invalid.
+                    $location.path('/login');
+                }
+            });
+        }
+        else{
+            console.log("Resopnse from Gnubby is NULL");
+        }
+    }
+});
+});
+
+        };
+
+    });
+
+  //Configure routing for the SPA
+  app.config(function($routeProvider, $locationProvider){
+  $routeProvider
+  .when('/', { controller: 'LoginCtrl', templateUrl: 'login.html'})
+  .when('/newuser', {controller: 'NewUserCtrl', templateUrl: 'newuser.html'})
+  .when('/posts', {controller: 'PostsCtrl', templateUrl: 'posts.html'})
+  .when('/fidoregister', {controller: 'RegCtrl', templateUrl: 'fidoregister.html'})
+  .when('/fidoauthenticate', {controller: 'AuthCtrl', templateUrl: 'fidoauthenticate.html'})
+  .otherwise({redirectTo: "/"});
+  // use the HTML5 History API
+  $locationProvider.html5Mode(true);
+  });
+
+  </script>
+</body>
+</html>
